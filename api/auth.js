@@ -15,8 +15,6 @@ const XERO_SCOPES = [
   'accounting.invoices',
   'accounting.contacts',
   'accounting.contacts.read',
-  'accounting.settings.read',
-  'accounting.attachments',
 ].join(' ');
 
 function xeroAuthUrl() {
