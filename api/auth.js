@@ -12,11 +12,11 @@ const XERO_SCOPES = [
   'profile',
   'email',
   'offline_access',
-  'accounting.transactions',
-  'accounting.transactions.read',
+  'accounting.invoices',
   'accounting.contacts',
   'accounting.contacts.read',
   'accounting.settings.read',
+  'accounting.attachments',
 ].join(' ');
 
 function xeroAuthUrl() {
