@@ -2,7 +2,10 @@ const express = require('express');
 const router = express.Router();
 const { google } = require('googleapis');
 const Anthropic = require('@anthropic-ai/sdk');
-const pdfParse = require('pdf-parse');
+
+// Lazy-required at call time — pdf-parse reads test files on import which
+// crashes Vercel's sandbox if required at module load.
+let pdfParse;
 
 // ---------------------------------------------------------------------------
 // Subbie CIS profile — keyed by lowercase supplier name
@@ -93,6 +96,7 @@ async function extractPdfText(gmail, messageId, attachmentId) {
     id: attachmentId,
   });
 
+  if (!pdfParse) pdfParse = require('pdf-parse');
   const buffer = Buffer.from(res.data.data, 'base64url');
   const parsed = await pdfParse(buffer);
   return parsed.text;
