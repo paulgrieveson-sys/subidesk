@@ -1,9 +1,10 @@
 const express = require('express');
 const router = express.Router();
+const axios = require('axios');
 const { google } = require('googleapis');
 const Anthropic = require('@anthropic-ai/sdk');
-
 const { extractText } = require('unpdf');
+const { getValidAccessToken } = require('../lib/xeroToken');
 
 // ---------------------------------------------------------------------------
 // Subbie CIS profile — keyed by lowercase supplier name
@@ -15,9 +16,7 @@ const CIS_PROFILES = {
 
 function getCisProfile(supplierName) {
   const key = (supplierName || '').toLowerCase().trim();
-  if (CIS_PROFILES[key]) {
-    return { ...CIS_PROFILES[key], flag: 'green' };
-  }
+  if (CIS_PROFILES[key]) return { ...CIS_PROFILES[key], flag: 'green' };
   return { rate: null, status: 'unknown', flag: 'amber' };
 }
 
@@ -26,16 +25,13 @@ function getCisProfile(supplierName) {
 // ---------------------------------------------------------------------------
 function buildGmailClient() {
   const raw = process.env.GMAIL_TOKENS;
-  if (!raw) {
-    throw new Error('GMAIL_TOKENS environment variable is not set. Complete Gmail OAuth and paste the logged token JSON into Vercel.');
-  }
+  if (!raw) throw new Error('GMAIL_TOKENS environment variable is not set. Complete Gmail OAuth and paste the logged token JSON into Vercel.');
 
   const auth = new google.auth.OAuth2(
     process.env.GMAIL_CLIENT_ID,
     process.env.GMAIL_CLIENT_SECRET,
     process.env.GMAIL_REDIRECT_URI
   );
-
   auth.setCredentials(JSON.parse(raw));
   return google.gmail({ version: 'v1', auth });
 }
@@ -46,7 +42,6 @@ async function fetchUnreadInvoiceEmails(gmail) {
     q: 'is:unread',
     maxResults: 20,
   });
-
   return res.data.messages || [];
 }
 
@@ -60,7 +55,7 @@ async function getEmailContent(gmail, messageId) {
   const message = res.data;
   const headers = message.payload.headers;
   const subject = headers.find(h => h.name === 'Subject')?.value || '';
-  const from = headers.find(h => h.name === 'From')?.value || '';
+  const from    = headers.find(h => h.name === 'From')?.value    || '';
 
   let bodyText = '';
   const pdfAttachments = [];
@@ -78,7 +73,6 @@ async function getEmailContent(gmail, messageId) {
     }
   }
 
-  // Handle both single-part and multipart messages
   if (message.payload.body?.data) {
     bodyText = Buffer.from(message.payload.body.data, 'base64url').toString('utf8');
   }
@@ -148,22 +142,96 @@ ${rawText}`;
   });
 
   const raw = response.content[0].text.trim();
-
-  // Strip markdown code fences if Claude wraps the JSON
   const jsonText = raw.replace(/^```(?:json)?\n?/, '').replace(/\n?```$/, '');
   return JSON.parse(jsonText);
 }
 
 // ---------------------------------------------------------------------------
+// Xero helpers
+// ---------------------------------------------------------------------------
+async function getXeroTenantId(accessToken) {
+  const res = await axios.get('https://api.xero.com/connections', {
+    headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
+  });
+
+  if (!res.data || res.data.length === 0) throw new Error('No Xero organisations connected.');
+  return res.data[0].tenantId;
+}
+
+function buildXeroBill(invoiceData, cisProfile) {
+  // Map extracted line items to Xero format
+  const lineItems = (invoiceData.line_items || []).map(item => ({
+    Description: item.description || 'Invoice line item',
+    Quantity:    item.quantity   ?? 1,
+    UnitAmount:  item.unit_price ?? item.amount,
+    AccountCode: '429', // Default subcontractor cost code — adjust as needed
+    TaxType:     'NONE',
+  }));
+
+  // Append CIS deduction as a negative line item
+  if (cisProfile.rate === 20 || cisProfile.rate === 30) {
+    const labourTotal = (invoiceData.line_items || []).reduce((sum, i) => sum + (i.amount || 0), 0);
+    const cisAmount   = +(labourTotal * (cisProfile.rate / 100)).toFixed(2);
+    lineItems.push({
+      Description: `CIS Deduction @ ${cisProfile.rate}%`,
+      Quantity:    1,
+      UnitAmount:  -cisAmount,
+      AccountCode: '429',
+      TaxType:     'NONE',
+    });
+  }
+
+  const bill = {
+    Type:          'ACCPAY',
+    Status:        'DRAFT',
+    Contact:       { Name: invoiceData.supplier_name || 'Unknown Supplier' },
+    LineItems:     lineItems,
+    LineAmountTypes: 'NoTax',
+  };
+
+  if (invoiceData.invoice_number) bill.InvoiceNumber = invoiceData.invoice_number;
+  if (invoiceData.invoice_date)   bill.Date          = invoiceData.invoice_date;
+  if (invoiceData.due_date)       bill.DueDate       = invoiceData.due_date;
+  if (invoiceData.job_reference)  bill.Reference     = invoiceData.job_reference;
+
+  return bill;
+}
+
+async function postBillToXero(bill, accessToken, tenantId) {
+  const res = await axios.post(
+    'https://api.xero.com/api.xro/2.0/Invoices',
+    { Invoices: [bill] },
+    {
+      headers: {
+        Authorization:  `Bearer ${accessToken}`,
+        'Xero-Tenant-Id': tenantId,
+        'Content-Type':   'application/json',
+        Accept:           'application/json',
+      },
+    }
+  );
+  return res.data.Invoices?.[0] || res.data;
+}
+
+// ---------------------------------------------------------------------------
 // Route handler
 // ---------------------------------------------------------------------------
-
 async function handleProcess(req, res) {
   let gmail;
   try {
     gmail = buildGmailClient();
   } catch (err) {
     return res.status(500).json({ error: err.message });
+  }
+
+  // Fetch a valid Xero token and tenant ID once for the whole run
+  let accessToken, tenantId;
+  try {
+    accessToken = await getValidAccessToken();
+    tenantId    = await getXeroTenantId(accessToken);
+    console.log(`[process] Xero tenant: ${tenantId}`);
+  } catch (err) {
+    return res.status(500).json({ error: `Xero auth failed: ${err.message}` });
   }
 
   const messages = await fetchUnreadInvoiceEmails(gmail);
@@ -183,7 +251,6 @@ async function handleProcess(req, res) {
 
       let rawText = email.bodyText;
 
-      // Prefer PDF content over body text if attachments present
       if (email.pdfAttachments.length > 0) {
         console.log(`[process] ${msg.id}: Extracting text from PDF — ${email.pdfAttachments[0].filename}`);
         rawText = await extractPdfText(gmail, msg.id, email.pdfAttachments[0].attachmentId);
@@ -195,26 +262,29 @@ async function handleProcess(req, res) {
         continue;
       }
 
-      const invoiceData = await extractInvoiceData(rawText, email.subject, email.from);
-
-      const cisProfile = getCisProfile(invoiceData.supplier_name);
+      const invoiceData  = await extractInvoiceData(rawText, email.subject, email.from);
+      const cisProfile   = getCisProfile(invoiceData.supplier_name);
+      const bill         = buildXeroBill(invoiceData, cisProfile);
+      const xeroResponse = await postBillToXero(bill, accessToken, tenantId);
 
       const result = {
-        messageId: msg.id,
-        status: 'extracted',
-        cis_flag: cisProfile.flag,
+        messageId:        msg.id,
+        status:           'created',
+        cis_flag:         cisProfile.flag,
         cis_rate_percent: cisProfile.rate,
-        invoice: invoiceData,
+        invoice:          invoiceData,
+        xero_bill:        xeroResponse,
       };
 
-      console.log('\n=== EXTRACTED INVOICE ===');
+      console.log('\n=== XERO BILL CREATED ===');
       console.log(JSON.stringify(result, null, 2));
       console.log('=========================\n');
 
       results.push(result);
     } catch (err) {
-      console.error(`[process] Error processing message ${msg.id}:`, err.message);
-      results.push({ messageId: msg.id, status: 'error', error: err.message });
+      const detail = err.response?.data || err.message;
+      console.error(`[process] Error processing message ${msg.id}:`, detail);
+      results.push({ messageId: msg.id, status: 'error', error: err.message, detail });
     }
   }
 
