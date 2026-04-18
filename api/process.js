@@ -5,6 +5,7 @@ const { google } = require('googleapis');
 const Anthropic = require('@anthropic-ai/sdk');
 const { extractText } = require('unpdf');
 const { getValidAccessToken } = require('../lib/xeroToken');
+const { getTokens } = require('../lib/tokenStore');
 
 // ---------------------------------------------------------------------------
 // Subbie CIS profile — keyed by lowercase supplier name
@@ -23,16 +24,16 @@ function getCisProfile(supplierName) {
 // ---------------------------------------------------------------------------
 // Gmail helpers
 // ---------------------------------------------------------------------------
-function buildGmailClient() {
-  const raw = process.env.GMAIL_TOKENS;
-  if (!raw) throw new Error('GMAIL_TOKENS environment variable is not set. Complete Gmail OAuth and paste the logged token JSON into Vercel.');
+async function buildGmailClient() {
+  const gmailTokens = await getTokens('GMAIL_TOKENS');
+  if (!gmailTokens) throw new Error('No Gmail tokens found. Complete Gmail OAuth at /api/auth?provider=gmail first.');
 
   const auth = new google.auth.OAuth2(
     process.env.GMAIL_CLIENT_ID,
     process.env.GMAIL_CLIENT_SECRET,
     process.env.GMAIL_REDIRECT_URI
   );
-  auth.setCredentials(JSON.parse(raw));
+  auth.setCredentials(gmailTokens);
   return google.gmail({ version: 'v1', auth });
 }
 
@@ -219,7 +220,7 @@ async function postBillToXero(bill, accessToken, tenantId) {
 async function handleProcess(req, res) {
   let gmail;
   try {
-    gmail = buildGmailClient();
+    gmail = await buildGmailClient();
   } catch (err) {
     return res.status(500).json({ error: err.message });
   }
