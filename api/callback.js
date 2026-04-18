@@ -1,13 +1,9 @@
 const express = require('express');
 const router = express.Router();
 const axios = require('axios');
-const fs = require('fs');
-const path = require('path');
 const { google } = require('googleapis');
 
-const XERO_TOKEN_PATH  = path.join(__dirname, '..', 'tokens.json');
-const GMAIL_TOKEN_PATH = path.join(__dirname, '..', 'gmail_tokens.json');
-const XERO_TOKEN_URL   = 'https://identity.xero.com/connect/token';
+const XERO_TOKEN_URL = 'https://identity.xero.com/connect/token';
 
 // ---------------------------------------------------------------------------
 // Xero token exchange
@@ -41,9 +37,16 @@ async function handleXeroCallback(code, res) {
     obtained_at:   Date.now(),
   };
 
-  fs.writeFileSync(XERO_TOKEN_PATH, JSON.stringify(tokens, null, 2));
-  console.log('[callback] Xero tokens saved to tokens.json');
-  res.json({ success: true, provider: 'xero', message: 'Xero connected. Tokens saved.' });
+  const tokenJson = JSON.stringify(tokens);
+  console.log('[callback] Xero OAuth complete. Set this in Vercel environment variables:');
+  console.log('XERO_TOKENS=' + tokenJson);
+
+  res.json({
+    success: true,
+    provider: 'xero',
+    message: 'Xero connected. Copy the XERO_TOKENS value from the Vercel function logs into your environment variables.',
+    tokens,
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -67,9 +70,16 @@ async function handleGmailCallback(code, res) {
     obtained_at:   Date.now(),
   };
 
-  fs.writeFileSync(GMAIL_TOKEN_PATH, JSON.stringify(gmailTokens, null, 2));
-  console.log('[callback] Gmail tokens saved to gmail_tokens.json');
-  res.json({ success: true, provider: 'gmail', message: 'Gmail connected. Tokens saved.' });
+  const tokenJson = JSON.stringify(gmailTokens);
+  console.log('[callback] Gmail OAuth complete. Set this in Vercel environment variables:');
+  console.log('GMAIL_TOKENS=' + tokenJson);
+
+  res.json({
+    success: true,
+    provider: 'gmail',
+    message: 'Gmail connected. Copy the GMAIL_TOKENS value from the Vercel function logs into your environment variables.',
+    tokens: gmailTokens,
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -91,13 +101,8 @@ router.get('/', async (req, res) => {
   }
 
   try {
-    if (state === 'xero') {
-      return await handleXeroCallback(code, res);
-    }
-
-    if (state === 'gmail') {
-      return await handleGmailCallback(code, res);
-    }
+    if (state === 'xero')  return await handleXeroCallback(code, res);
+    if (state === 'gmail') return await handleGmailCallback(code, res);
 
     res.status(400).json({ error: `Unknown state "${state}". Expected "xero" or "gmail".` });
   } catch (err) {

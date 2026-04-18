@@ -24,24 +24,18 @@ function getCisProfile(supplierName) {
 // Gmail helpers
 // ---------------------------------------------------------------------------
 function buildGmailClient() {
+  const raw = process.env.GMAIL_TOKENS;
+  if (!raw) {
+    throw new Error('GMAIL_TOKENS environment variable is not set. Complete Gmail OAuth and paste the logged token JSON into Vercel.');
+  }
+
   const auth = new google.auth.OAuth2(
     process.env.GMAIL_CLIENT_ID,
     process.env.GMAIL_CLIENT_SECRET,
     process.env.GMAIL_REDIRECT_URI
   );
 
-  // Re-use Xero tokens.json shape — Gmail tokens stored separately in future;
-  // for now expect gmail_tokens.json alongside tokens.json
-  const fs = require('fs');
-  const path = require('path');
-  const gmailTokenPath = path.resolve('./gmail_tokens.json');
-
-  if (!fs.existsSync(gmailTokenPath)) {
-    throw new Error('gmail_tokens.json not found. Complete Gmail OAuth first.');
-  }
-
-  const gmailTokens = JSON.parse(fs.readFileSync(gmailTokenPath, 'utf8'));
-  auth.setCredentials(gmailTokens);
+  auth.setCredentials(JSON.parse(raw));
   return google.gmail({ version: 'v1', auth });
 }
 
