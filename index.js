@@ -6,6 +6,7 @@ app.use(express.json());
 
 app.use('/api/auth', require('./api/auth'));
 app.use('/api/callback', require('./api/callback'));
+app.use('/callback', require('./api/callback')); // Xero may redirect to /callback
 app.use('/api/process', require('./api/process'));
 app.use('/api/remind', require('./api/remind'));
 
