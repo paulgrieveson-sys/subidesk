@@ -161,8 +161,7 @@ ${rawText}`;
 // Route handler
 // ---------------------------------------------------------------------------
 
-// POST /api/process
-router.post('/', async (req, res) => {
+async function handleProcess(req, res) {
   let gmail;
   try {
     gmail = buildGmailClient();
@@ -223,6 +222,12 @@ router.post('/', async (req, res) => {
   }
 
   res.json({ processed: results.length, results });
-});
+}
+
+// GET /api/process — browser-friendly trigger for testing
+router.get('/', handleProcess);
+
+// POST /api/process — production trigger
+router.post('/', handleProcess);
 
 module.exports = router;
