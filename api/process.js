@@ -96,7 +96,7 @@ async function extractPdfText(gmail, messageId, attachmentId) {
 
   const buffer = Buffer.from(res.data.data, 'base64url');
   const { text } = await extractText(new Uint8Array(buffer));
-  return text;
+  return Array.isArray(text) ? text.join(' ') : String(text);
 }
 
 // ---------------------------------------------------------------------------
