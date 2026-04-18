@@ -9,5 +9,10 @@ app.use('/api/callback', require('./api/callback'));
 app.use('/api/process', require('./api/process'));
 app.use('/api/remind', require('./api/remind'));
 
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`SubiDesk running on port ${PORT}`));
+// Local dev: listen on a port. Vercel ignores this and uses the export below.
+if (require.main === module) {
+  const PORT = process.env.PORT || 3000;
+  app.listen(PORT, () => console.log(`SubiDesk running on port ${PORT}`));
+}
+
+module.exports = app;
