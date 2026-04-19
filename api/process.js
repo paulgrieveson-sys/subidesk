@@ -201,7 +201,6 @@ function buildXeroBill(invoiceData, cisProfile) {
     Description: item.description || 'Invoice line item',
     Quantity:    item.quantity   ?? 1,
     UnitAmount:  item.unit_price ?? item.amount,
-    AccountCode: '429',
     TaxType:     'NONE',
   }));
 
@@ -212,7 +211,6 @@ function buildXeroBill(invoiceData, cisProfile) {
       Description: `CIS Deduction @ ${cisProfile.rate}%`,
       Quantity:    1,
       UnitAmount:  -cisAmount,
-      AccountCode: '',
       TaxType:     'NONE',
     });
   }
