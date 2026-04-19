@@ -12,6 +12,7 @@ app.use('/api/callback', require('./api/callback'));
 app.use('/callback', require('./api/callback')); // Xero may redirect to /callback
 app.use('/api/process', require('./api/process'));
 app.use('/api/remind', require('./api/remind'));
+app.use('/api/statements', require('./api/statements'));
 
 // Local dev: listen on a port. Vercel ignores this and uses the export below.
 if (require.main === module) {
