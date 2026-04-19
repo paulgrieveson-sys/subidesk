@@ -5,21 +5,26 @@ const { google } = require('googleapis');
 const Anthropic = require('@anthropic-ai/sdk');
 const { extractText } = require('unpdf');
 const { getValidAccessToken } = require('../lib/xeroToken');
-const { getTokens } = require('../lib/tokenStore');
+const { getTokens, getStore } = require('../lib/tokenStore');
 
 const GMAIL_USER = 'invoicingjdcm@gmail.com';
 const PROCESSED_LABEL = 'SUBIDESK_PROCESSED';
 
-// ---------------------------------------------------------------------------
-// Subbie CIS profile — keyed by lowercase supplier name
-// ---------------------------------------------------------------------------
-const CIS_PROFILES = {
-  'paul grieveson': { rate: 20, status: 'verified' },
+// Hardcoded fallback used when Redis has no SUBBIE_PROFILES data yet
+const FALLBACK_PROFILES = {
+  'paul grieveson': { cis_rate: 20, active: true },
 };
 
-function getCisProfile(supplierName) {
+async function getCisProfile(supplierName) {
   const key = (supplierName || '').toLowerCase().trim();
-  if (CIS_PROFILES[key]) return { ...CIS_PROFILES[key], flag: 'green' };
+  const profiles = (await getStore('SUBBIE_PROFILES')) || FALLBACK_PROFILES;
+  const profile = profiles[key];
+
+  if (profile && profile.active !== false) {
+    const rate = Number(profile.cis_rate);
+    const flag = rate === 20 ? 'green' : rate === 30 ? 'amber' : 'blue';
+    return { rate, status: 'verified', flag };
+  }
   return { rate: null, status: 'unknown', flag: 'amber' };
 }
 
@@ -308,7 +313,7 @@ async function handleProcess(req, res) {
       }
 
       const invoiceData  = await extractInvoiceData(rawText, email.subject, email.from);
-      const cisProfile   = getCisProfile(invoiceData.supplier_name);
+      const cisProfile   = await getCisProfile(invoiceData.supplier_name);
       const bill         = buildXeroBill(invoiceData, cisProfile);
       const xeroResponse = await postBillToXero(bill, accessToken, tenantId);
 
