@@ -3,7 +3,9 @@ const express = require('express');
 
 const app = express();
 app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
 
+app.use('/admin', require('./api/admin'));
 app.use('/api/auth', require('./api/auth'));
 app.use('/api/callback', require('./api/callback'));
 app.use('/callback', require('./api/callback')); // Xero may redirect to /callback
