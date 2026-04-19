@@ -5,7 +5,7 @@ const { google } = require('googleapis');
 const Anthropic = require('@anthropic-ai/sdk');
 const { extractText } = require('unpdf');
 const { getValidAccessToken } = require('../lib/xeroToken');
-const { getTokens, getStore } = require('../lib/tokenStore');
+const { getTokens, getStore, setStore } = require('../lib/tokenStore');
 
 const GMAIL_USER = 'invoicingjdcm@gmail.com';
 const PROCESSED_LABEL = 'SUBIDESK_PROCESSED';
@@ -319,6 +319,21 @@ async function handleProcess(req, res) {
 
       // Mark read and label only after a confirmed successful Xero post
       await markProcessed(gmail, msg.id, processedLabelId);
+
+      // Persist stats to Redis for the status page
+      const todayKey = `INVOICES_TODAY_${new Date().toISOString().slice(0, 10)}`;
+      const prevCount = Number(await getStore(todayKey)) || 0;
+      await Promise.all([
+        setStore(todayKey, prevCount + 1),
+        setStore('LAST_PROCESSED_INVOICE', {
+          supplier_name:    invoiceData.supplier_name,
+          invoice_number:   invoiceData.invoice_number,
+          total_amount:     invoiceData.total_amount,
+          job_reference:    invoiceData.job_reference,
+          processed_at:     new Date().toISOString(),
+          xero_invoice_id:  xeroResponse?.InvoiceID || null,
+        }),
+      ]);
 
       const result = {
         messageId:        msg.id,

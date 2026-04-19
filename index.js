@@ -5,6 +5,7 @@ const app = express();
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
+app.use('/', require('./api/status'));
 app.use('/admin', require('./api/admin'));
 app.use('/api/auth', require('./api/auth'));
 app.use('/api/callback', require('./api/callback'));
