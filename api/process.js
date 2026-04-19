@@ -7,9 +7,11 @@ const { extractText } = require('unpdf');
 const { getValidAccessToken } = require('../lib/xeroToken');
 const { getTokens } = require('../lib/tokenStore');
 
+const GMAIL_USER = 'invoicingjdcm@gmail.com';
+const PROCESSED_LABEL = 'SUBIDESK_PROCESSED';
+
 // ---------------------------------------------------------------------------
 // Subbie CIS profile — keyed by lowercase supplier name
-// 20% = standard CIS deduction, 30% = higher rate, 0% = gross payment status
 // ---------------------------------------------------------------------------
 const CIS_PROFILES = {
   'paul grieveson': { rate: 20, status: 'verified' },
@@ -37,10 +39,28 @@ async function buildGmailClient() {
   return google.gmail({ version: 'v1', auth });
 }
 
+// Returns the label ID for SUBIDESK_PROCESSED, creating the label if absent.
+async function ensureProcessedLabel(gmail) {
+  const res = await gmail.users.labels.list({ userId: GMAIL_USER });
+  const existing = (res.data.labels || []).find(l => l.name === PROCESSED_LABEL);
+  if (existing) return existing.id;
+
+  const created = await gmail.users.labels.create({
+    userId: GMAIL_USER,
+    requestBody: {
+      name:                  PROCESSED_LABEL,
+      labelListVisibility:   'labelShow',
+      messageListVisibility: 'show',
+    },
+  });
+  console.log(`[process] Created Gmail label "${PROCESSED_LABEL}" (${created.data.id})`);
+  return created.data.id;
+}
+
 async function fetchUnreadInvoiceEmails(gmail) {
   const res = await gmail.users.messages.list({
-    userId: 'invoicingjdcm@gmail.com',
-    q: 'is:unread',
+    userId: GMAIL_USER,
+    q:      `is:unread -label:${PROCESSED_LABEL}`,
     maxResults: 20,
   });
   return res.data.messages || [];
@@ -48,8 +68,8 @@ async function fetchUnreadInvoiceEmails(gmail) {
 
 async function getEmailContent(gmail, messageId) {
   const res = await gmail.users.messages.get({
-    userId: 'invoicingjdcm@gmail.com',
-    id: messageId,
+    userId: GMAIL_USER,
+    id:     messageId,
     format: 'full',
   });
 
@@ -79,12 +99,12 @@ async function getEmailContent(gmail, messageId) {
   }
   walkParts(message.payload.parts);
 
-  return { messageId, subject, from, bodyText, pdfAttachments };
+  return { messageId, subject, from, bodyText, pdfAttachments, labelIds: message.labelIds || [] };
 }
 
 async function extractPdfText(gmail, messageId, attachmentId) {
   const res = await gmail.users.messages.attachments.get({
-    userId: 'invoicingjdcm@gmail.com',
+    userId: GMAIL_USER,
     messageId,
     id: attachmentId,
   });
@@ -92,6 +112,19 @@ async function extractPdfText(gmail, messageId, attachmentId) {
   const buffer = Buffer.from(res.data.data, 'base64url');
   const { text } = await extractText(new Uint8Array(buffer));
   return Array.isArray(text) ? text.join(' ') : String(text);
+}
+
+// Marks a message as read and applies the SUBIDESK_PROCESSED label.
+async function markProcessed(gmail, messageId, processedLabelId) {
+  await gmail.users.messages.modify({
+    userId: GMAIL_USER,
+    id:     messageId,
+    requestBody: {
+      addLabelIds:    [processedLabelId],
+      removeLabelIds: ['UNREAD'],
+    },
+  });
+  console.log(`[process] ${messageId}: marked read and labelled ${PROCESSED_LABEL}.`);
 }
 
 // ---------------------------------------------------------------------------
@@ -154,22 +187,19 @@ async function getXeroTenantId(accessToken) {
   const res = await axios.get('https://api.xero.com/connections', {
     headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
   });
-
   if (!res.data || res.data.length === 0) throw new Error('No Xero organisations connected.');
   return res.data[0].tenantId;
 }
 
 function buildXeroBill(invoiceData, cisProfile) {
-  // Map extracted line items to Xero format
   const lineItems = (invoiceData.line_items || []).map(item => ({
     Description: item.description || 'Invoice line item',
     Quantity:    item.quantity   ?? 1,
     UnitAmount:  item.unit_price ?? item.amount,
-    AccountCode: '429', // Default subcontractor cost code — adjust as needed
+    AccountCode: '429',
     TaxType:     'NONE',
   }));
 
-  // Append CIS deduction as a negative line item
   if (cisProfile.rate === 20 || cisProfile.rate === 30) {
     const labourTotal = (invoiceData.line_items || []).reduce((sum, i) => sum + (i.amount || 0), 0);
     const cisAmount   = +(labourTotal * (cisProfile.rate / 100)).toFixed(2);
@@ -183,10 +213,10 @@ function buildXeroBill(invoiceData, cisProfile) {
   }
 
   const bill = {
-    Type:          'ACCPAY',
-    Status:        'DRAFT',
-    Contact:       { Name: invoiceData.supplier_name || 'Unknown Supplier' },
-    LineItems:     lineItems,
+    Type:            'ACCPAY',
+    Status:          'DRAFT',
+    Contact:         { Name: invoiceData.supplier_name || 'Unknown Supplier' },
+    LineItems:       lineItems,
     LineAmountTypes: 'NoTax',
   };
 
@@ -204,7 +234,7 @@ async function postBillToXero(bill, accessToken, tenantId) {
     { Invoices: [bill] },
     {
       headers: {
-        Authorization:  `Bearer ${accessToken}`,
+        Authorization:    `Bearer ${accessToken}`,
         'Xero-Tenant-Id': tenantId,
         'Content-Type':   'application/json',
         Accept:           'application/json',
@@ -225,7 +255,14 @@ async function handleProcess(req, res) {
     return res.status(500).json({ error: err.message });
   }
 
-  // Fetch a valid Xero token and tenant ID once for the whole run
+  // Ensure the tracking label exists before we start fetching emails
+  let processedLabelId;
+  try {
+    processedLabelId = await ensureProcessedLabel(gmail);
+  } catch (err) {
+    return res.status(500).json({ error: `Failed to ensure Gmail label: ${err.message}` });
+  }
+
   let accessToken, tenantId;
   try {
     accessToken = await getValidAccessToken();
@@ -250,6 +287,13 @@ async function handleProcess(req, res) {
     try {
       const email = await getEmailContent(gmail, msg.id);
 
+      // Belt-and-braces: skip if the label somehow slipped through the query filter
+      if (email.labelIds.includes(processedLabelId)) {
+        console.log(`[process] ${msg.id}: already processed — skipping.`);
+        results.push({ messageId: msg.id, status: 'skipped', reason: 'already_processed' });
+        continue;
+      }
+
       let rawText = email.bodyText;
 
       if (email.pdfAttachments.length > 0) {
@@ -267,6 +311,9 @@ async function handleProcess(req, res) {
       const cisProfile   = getCisProfile(invoiceData.supplier_name);
       const bill         = buildXeroBill(invoiceData, cisProfile);
       const xeroResponse = await postBillToXero(bill, accessToken, tenantId);
+
+      // Mark read and label only after a confirmed successful Xero post
+      await markProcessed(gmail, msg.id, processedLabelId);
 
       const result = {
         messageId:        msg.id,
