@@ -313,6 +313,17 @@ async function handleProcess(req, res) {
       }
 
       const invoiceData  = await extractInvoiceData(rawText, email.subject, email.from);
+
+      const hasSupplier  = !!invoiceData.supplier_name;
+      const hasAmount    = invoiceData.total_amount != null;
+      const hasLines     = Array.isArray(invoiceData.line_items) && invoiceData.line_items.length > 0;
+
+      if (!hasSupplier && !hasAmount && !hasLines) {
+        console.warn(`[process] ${msg.id}: extraction returned no usable data — skipping.`);
+        results.push({ messageId: msg.id, status: 'skipped', reason: 'no_invoice_data' });
+        continue;
+      }
+
       const cisProfile   = await getCisProfile(invoiceData.supplier_name);
       const bill         = buildXeroBill(invoiceData, cisProfile);
       const xeroResponse = await postBillToXero(bill, accessToken, tenantId);
