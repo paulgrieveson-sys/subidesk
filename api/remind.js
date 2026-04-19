@@ -4,7 +4,7 @@ const axios = require('axios');
 const { getStore } = require('../lib/tokenStore');
 
 function buildMessage(name) {
-  return `Hi ${name}, just a reminder to send your invoice to invoicingjdcm@gmail.com by Friday. Thanks, JDCM Ltd`;
+  return `Hi ${name}, hope you've had a good week. Just a reminder to send your invoice to invoicingjdcm@gmail.com by Monday so we can get you paid on Friday. Thanks, JDCM Ltd`;
 }
 
 async function sendWhatsApp(name, whatsapp, message) {
